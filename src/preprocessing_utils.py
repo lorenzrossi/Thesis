@@ -5,13 +5,26 @@ import numpy as np
 from matplotlib import pyplot
 from math import sqrt
 import matplotlib.pyplot as plt
-import os
 import seaborn as sns
 import statsmodels.api as sm
 import warnings
 
-def retrieve_data(path):
-
+def retrieve_data(path, years=None):
+    """
+    Retrieve and combine energy data from multiple CSV files.
+    
+    Parameters:
+    -----------
+    path : str
+        Path to directory containing CSV files or path to a single CSV file
+    years : list, optional
+        List of years to load. If None, defaults to [2016, 2017, 2018, 2019, 2020, 2021]
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Combined dataframe with Time as index
+    """
     columns = ['Biomass  - Actual Aggregated [MW]',
        'Fossil Coal-derived gas  - Actual Aggregated [MW]',
        'Fossil Gas  - Actual Aggregated [MW]',
@@ -25,36 +38,48 @@ def retrieve_data(path):
        'Waste  - Actual Aggregated [MW]',
        'Wind Onshore  - Actual Aggregated [MW]', 'Time']
 
-    # creo il vettore degli anni e il df vuoto dove appendere i singoli df
-    years = [2016, 2017, 2018, 2019, 2020, 2021] # , 2022
-    tot = pd.DataFrame()
+    # Default years if not specified
+    if years is None:
+        years = [2016, 2017, 2018, 2019, 2020, 2021]
     
-    # carico i dati dei diversi anni
+    dataframes = []
+    
+    # Load data for each year
     for year in years:
-        df = pd.read_csv(os.path.join(path, f"ITA{year}.csv"), parse_dates = ['MTU'])
-        #df = df.reset_index()
+        file_path = os.path.join(path, f"ITA{year}.csv")
         
-        # aggiusto il formato della data in YYYY-MM-DD HH:mm:ss
-        for i, row in df.iterrows():
-            df["MTU"][i] = df['MTU'][i][:16]
+        if not os.path.exists(file_path):
+            warnings.warn(f"File not found: {file_path}. Skipping year {year}.", UserWarning)
+            continue
+            
+        df = pd.read_csv(file_path, parse_dates=['MTU'])
         
-        #df = df.drop_duplicates()
+        # Vectorized date formatting - truncate to first 16 characters (YYYY-MM-DD HH:MM)
+        df['MTU'] = df['MTU'].astype(str).str[:16]
         
-        df['Time'] = pd.to_datetime(df['MTU'], utc=True, infer_datetime_format=True)
-
-        df.Time = df.Time.dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        df['Time'] = df['Time'].drop_duplicates()
-
+        # Convert to datetime
+        df['Time'] = pd.to_datetime(df['MTU'], utc=True, format='%Y-%m-%d %H:%M', errors='coerce')
+        
+        # Format as string for consistency
+        df['Time'] = df['Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Remove duplicates
+        df = df.drop_duplicates(subset=['Time'])
+        
+        # Select and sort by Time
         df = df[columns].sort_values(by=['Time'])
         
-        # appendo i vari df a quello vuoto principale
-        tot = pd.concat([tot, df], ignore_index=True)
+        dataframes.append(df)
     
-    # imposto la data come indice
+    if not dataframes:
+        raise ValueError("No data files found. Please check the path and years.")
+    
+    # Combine all dataframes
+    tot = pd.concat(dataframes, ignore_index=True)
+    
+    # Set Time as index
     tot = tot.set_index(pd.DatetimeIndex(tot['Time']))
-
-    #tot.sort_index
+    tot = tot.sort_index()
     
     return tot
 
@@ -91,38 +116,49 @@ def data_and_aggregator(df):
                             'Wind Onshore  - Actual Aggregated [MW]' : 'wind',
                             'Biomass  - Actual Aggregated [MW]' : 'biomass'})
     
-    df = df.drop(df[hydro_cols], axis = 1)
-    df = df.drop(df[gas_cols], axis = 1)
+    # Drop aggregated columns (only if they exist)
+    existing_hydro_cols = [col for col in hydro_cols if col in df.columns]
+    existing_gas_cols = [col for col in gas_cols if col in df.columns]
+    
+    if existing_hydro_cols:
+        df = df.drop(columns=existing_hydro_cols)
+    if existing_gas_cols:
+        df = df.drop(columns=existing_gas_cols)
 
     return df
 
-# creo due dunzioni: una per i weekend (quando sabato/domenica è 1, altrimenti 0) e l'altra per le vacanze (1/1, 25/4, 1/5, 2/6, 15/8, 25/12)
 def businesshour_and_we_generation(df):
-    # Generate 'weekend' feature
-    for i in range(len(df)):
-        position = df.index[i]
-        hour = position.hour
-        weekend = position.weekday()
-        df.loc[position, 'weekend'] = weekend
-        df.loc[position, 'hour'] = hour
-        
-        if (weekend == 5):
-            df.loc[position, 'saturday'] = 1
-            df.loc[position, 'weekend'] = 1
-        elif (weekend == 6):
-            df.loc[position, 'sunday'] = 1
-            df.loc[position, 'weekend'] = 2
-        else:
-            df.loc[position, 'saturday'] = 0
-            df.loc[position, 'sunday'] = 0
-            df.loc[position, 'weekend'] = 0
-            
-        if (hour >= 8 and hour <= 18):
-            df.loc[position, 'business hour'] = 1
-        else:
-            df.loc[position, 'business hour'] = 0
-
-    df.saturday = df.saturday.fillna(0)
-    df.sunday = df.sunday.fillna(0)
-
+    """
+    Generate temporal features: weekend, hour, saturday, sunday, and business hour.
+    Uses vectorized operations for efficiency.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with datetime index
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with added temporal features
+    """
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
+    # Vectorized feature generation
+    df['hour'] = df.index.hour
+    df['weekday'] = df.index.weekday  # 0=Monday, 6=Sunday
+    
+    # Weekend encoding: 0=weekday, 1=saturday, 2=sunday
+    df['weekend'] = 0
+    df.loc[df.index.weekday == 5, 'weekend'] = 1  # Saturday
+    df.loc[df.index.weekday == 6, 'weekend'] = 2  # Sunday
+    
+    # Saturday and Sunday flags
+    df['saturday'] = (df.index.weekday == 5).astype(int)
+    df['sunday'] = (df.index.weekday == 6).astype(int)
+    
+    # Business hours: 8 AM to 6 PM (inclusive)
+    df['business hour'] = ((df.index.hour >= 8) & (df.index.hour <= 18)).astype(int)
+    
     return df
