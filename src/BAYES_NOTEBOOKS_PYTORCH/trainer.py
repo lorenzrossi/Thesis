@@ -180,7 +180,7 @@ class BayesianModelTrainer:
         feature_type: Literal['ts_only', 'weekend', 'business_hour'],
         window_size: int = 1,  # Number of lags (typically 1 for lag_1)
         n_forecast_steps: int = 24,
-        epochs: int = 5,
+        epochs: int = 50,  # Increased default for proper training (was 5, but 50+ recommended)
         batch_size: int = 168,
         learning_rate: float = 0.01,
         verbose: bool = True,
@@ -283,7 +283,7 @@ class BayesianModelTrainer:
             
             optimizer.zero_grad()
             
-            # Calculate ELBO loss (returns [elbo, mse, kl_div])
+            # Calculate ELBO loss (returns [something, elbo, mse, kl_div] based on notebooks)
             loss = model.sample_elbo_detailed_loss(
                 inputs=datapoints,
                 labels=labels,
@@ -292,13 +292,32 @@ class BayesianModelTrainer:
                 complexity_cost_weight=complexity_weight
             )
             
+            # Based on notebooks: loss[1] is ELBO, loss[2] is MSE, loss[3] is KL
+            # Ensure loss components are tensors (not numpy arrays)
+            if isinstance(loss, (list, tuple)):
+                elbo_loss = loss[1] if len(loss) > 1 else loss[0]
+                mse_loss = loss[2] if len(loss) > 2 else torch.tensor(0.0)
+                kl_loss = loss[3] if len(loss) > 3 else torch.tensor(0.0)
+            else:
+                elbo_loss = loss
+                mse_loss = torch.tensor(0.0)
+                kl_loss = torch.tensor(0.0)
+            
+            # Ensure tensors are on correct device
+            if not isinstance(elbo_loss, torch.Tensor):
+                elbo_loss = torch.tensor(elbo_loss, device=self.device, requires_grad=True)
+            if not isinstance(mse_loss, torch.Tensor):
+                mse_loss = torch.tensor(mse_loss, device=self.device)
+            if not isinstance(kl_loss, torch.Tensor):
+                kl_loss = torch.tensor(kl_loss, device=self.device)
+            
             # Backward pass on ELBO
-            loss[0].backward()
+            elbo_loss.backward()
             optimizer.step()
             
-            elbo_total += loss[0].item()
-            mse_total += loss[1].item()
-            kl_div_total += loss[2].item()
+            elbo_total += elbo_loss.item() if isinstance(elbo_loss, torch.Tensor) else float(elbo_loss)
+            mse_total += mse_loss.item() if isinstance(mse_loss, torch.Tensor) else float(mse_loss)
+            kl_div_total += kl_loss.item() if isinstance(kl_loss, torch.Tensor) else float(kl_loss)
             n_batches += 1
         
         return (

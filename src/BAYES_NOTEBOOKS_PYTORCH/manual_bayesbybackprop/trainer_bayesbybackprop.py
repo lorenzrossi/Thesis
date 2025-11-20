@@ -193,7 +193,7 @@ class BayesianModelTrainer:
         feature_type: Literal['ts_only', 'weekend', 'business_hour'],
         window_size: int = 1,  # Number of lags (typically 1 for lag_1)
         n_forecast_steps: int = 24,
-        epochs: int = 5,
+        epochs: int = 50,  # Increased default for proper training (was 5, but 50+ recommended)
         batch_size: int = 168,
         learning_rate: float = 0.01,
         verbose: bool = True,
